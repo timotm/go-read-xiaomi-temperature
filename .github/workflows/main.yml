@@ -1,0 +1,18 @@
+name: Build Go binaries
+
+on:
+  push:
+    branches:
+      - "*"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@master
+
+      - name: Build
+        uses: sosedoff/actions/golang-build@master
+        with:
+          args: linux/arm
