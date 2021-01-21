@@ -16,3 +16,9 @@ jobs:
         uses: sosedoff/actions/golang-build@master
         with:
           args: linux/arm
+
+      - name: Archive artifacts
+        uses: actions/upload-artifact@v2
+        with:
+          name: binaries
+          path: ${{ github.workspace }}/.release/*
