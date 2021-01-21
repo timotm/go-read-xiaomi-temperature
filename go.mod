@@ -6,5 +6,6 @@ require (
 	github.com/godbus/dbus/v5 v5.0.3
 	github.com/google/btree v1.0.0 // indirect
 	github.com/muka/go-bluetooth v0.0.0-20201211051136-07f31c601d33
-	github.com/peterbourgon/diskv v2.0.1+incompatible // indirect
+	github.com/peterbourgon/diskv v2.0.1+incompatible
+	github.com/posener/goaction v0.1.4
 )

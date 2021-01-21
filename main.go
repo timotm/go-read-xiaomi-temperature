@@ -4,64 +4,21 @@ import (
 	"bytes"
 	"encoding/binary"
 	"fmt"
-	"log"
 	"os"
 	"os/signal"
+	"strings"
 
 	"github.com/godbus/dbus/v5"
 	"github.com/muka/go-bluetooth/api"
 	"github.com/muka/go-bluetooth/bluez/profile/adapter"
 	"github.com/muka/go-bluetooth/bluez/profile/device"
+	"github.com/peterbourgon/diskv"
+	"github.com/posener/goaction/log"
 )
 
-func main() {
-	ad, err := api.GetDefaultAdapter()
-
-	if err != nil {
-		log.Fatalf("Can't get default adapter: %s", err)
-	}
-
-	filter := adapter.DiscoveryFilter{Transport: "le"}
-	discovery, cancel, err := api.Discover(ad, &filter)
-
-	if err != nil {
-		log.Fatalf("Can't discover: %s", err)
-	}
-
-	defer cancel()
-
-	go func() {
-		for ev := range discovery {
-			if ev.Type == adapter.DeviceAdded {
-				dev, err := device.NewDevice1(ev.Path)
-				if err != nil {
-					fmt.Printf("Can't instantiate %s: %s\n", ev.Path, err)
-					continue
-				}
-				if dev == nil {
-					fmt.Printf("Can't instantiate %s: not found\n", ev.Path)
-					continue
-				}
-
-				go func() {
-					err = watchDevice(dev)
-					if err != nil {
-						fmt.Printf("%s: %s\n", ev.Path, err)
-					}
-				}()
-			}
-		}
-	}()
-
-	ch := make(chan os.Signal)
-	signal.Notify(ch, os.Interrupt, os.Kill)
-
-	sig := <-ch
-	fmt.Printf("Received signal [%v], shutting down\n", sig)
-}
-
+type macAddress [6]uint8
 type temperatureAdv struct {
-	MacAddress         [6]uint8
+	Address            macAddress
 	Temperature        uint16
 	HumidityPercent    uint8
 	BatteryPercent     uint8
@@ -69,7 +26,50 @@ type temperatureAdv struct {
 	FramePacketCounter uint8
 }
 
-func watchDevice(dev *device.Device1) error {
+func handleDiscoveries(discovery <-chan *adapter.DeviceDiscovered, ch chan<- temperatureAdv) {
+	for ev := range discovery {
+		if ev.Type == adapter.DeviceAdded {
+			dev, err := device.NewDevice1(ev.Path)
+			if err != nil {
+				log.Warnf("Can't instantiate %s: %s\n", ev.Path, err)
+				continue
+			}
+			if dev == nil {
+				log.Warnf("Can't instantiate %s: not found\n", ev.Path)
+				continue
+			}
+
+			go func() {
+				err = watchDevice(dev, ch)
+				if err != nil {
+					log.Warnf("Can't watch %s: %s\n", ev.Path, err)
+				}
+			}()
+		}
+	}
+}
+
+func createTemperatureChannel() (<-chan temperatureAdv, func(), error) {
+	ad, err := api.GetDefaultAdapter()
+
+	if err != nil {
+		return nil, nil, err
+	}
+
+	filter := adapter.DiscoveryFilter{Transport: "le"}
+	discoveryCh, cancel, err := api.Discover(ad, &filter)
+
+	if err != nil {
+		return nil, nil, err
+	}
+
+	temperatureCh := make(chan temperatureAdv)
+	go handleDiscoveries(discoveryCh, temperatureCh)
+
+	return temperatureCh, cancel, nil
+}
+
+func watchDevice(dev *device.Device1, ch chan<- temperatureAdv) error {
 	propChanges, err := dev.WatchProperties()
 
 	if err != nil {
@@ -88,19 +88,61 @@ func watchDevice(dev *device.Device1) error {
 						buf := bytes.NewReader(vv)
 						err := binary.Read(buf, binary.BigEndian, &temp)
 						if err != nil {
-							fmt.Printf("binary.Read error: %s\n", err)
+							log.Warnf("binary.Read error: %s\n", err)
 						} else {
-							fmt.Printf("### got temp %+v\n", temp)
+							ch <- temp
 						}
 					default:
-						fmt.Printf("Unknown ServiceData value type %T (expecting uint8[])", v)
+						log.Warnf("Unknown ServiceData value type %T (expecting uint8[])", v)
 					}
 				}
 			default:
-				fmt.Printf("### unknown ServiceData type %T (expecting map[string]dbus.Variant\n", ev.Value)
+				log.Warnf("unknown ServiceData type %T (expecting map[string]dbus.Variant\n", ev.Value)
 			}
 		}
 	}
 
 	return nil
+}
+
+func nameFromMac(address macAddress, nameStore *diskv.Diskv) string {
+
+	macString := strings.Trim(strings.Replace(fmt.Sprint(address), " ", "-", -1), "[]")
+	prettyName, err := nameStore.Read(macString)
+
+	if err != nil {
+		return macString
+	}
+
+	return string(prettyName)
+}
+
+func readTemperatures(ch <-chan temperatureAdv, nameStore *diskv.Diskv) {
+	for t := range ch {
+		name := nameFromMac(t.Address, nameStore)
+		fmt.Printf("Got temp %s / %+v\n", name, t)
+	}
+}
+
+func main() {
+	nameStore := diskv.New(diskv.Options{
+		BasePath:     "/var/lib/temperature/",
+		CacheSizeMax: 100 * 1024,
+	})
+
+	sigCh := make(chan os.Signal)
+	signal.Notify(sigCh, os.Interrupt, os.Kill)
+
+	temperatureCh, btCancel, err := createTemperatureChannel()
+
+	if err != nil {
+		log.Fatalf("Can't initialize bt: %s", err)
+	}
+
+	defer btCancel()
+
+	go readTemperatures(temperatureCh, nameStore)
+
+	sig := <-sigCh
+	fmt.Printf("Received signal [%v], shutting down\n", sig)
 }
