@@ -21,7 +21,7 @@ jobs:
         run: GOOS=linux GOARCH=arm go build
 
       - name: Upload
-        uses: actions/upload-artifact@v2
+        uses: actions/upload-artifact@v3
         with:
           name: binaries
-          path: ${{ github.workspace }}/*
+          path: xiaomitemp
